@@ -1,0 +1,22 @@
+﻿dsh-voice-companion
+Copyright 2026 c137650 and contributors
+
+This product includes software developed at:
+
+- DeepSeek Harness (https://github.com/deepseek-ai/deepseek-harness), MIT
+  -- the DSH client-plugin structure used by src/.
+- dsh-see-now (https://github.com/SAOS-3624/dsh-see-now), Apache-2.0
+  -- the key-frame scoring port under src/client/voice/seenow/ (see its
+     NOTICE and LICENSE for the original attribution).
+- HuggingFace speech-to-speech (https://github.com/huggingface/speech-to-speech),
+  Apache-2.0 -- the STT/TTS handlers reused by bridge/voice_bridge.py.
+- The upstream project this one continues:
+  https://github.com/beiyege-01/dsh-voice-ai-girlfriend
+
+The AI-generated media under assets/ (bg-images, task-videos) comes from the
+hf-realtime-voice demo workspace and is provided for demonstration only; check
+its origin before redistributing commercially.
+
+The voice models, reference audio and other downloaded artifacts under models/
+and voices/ are NOT part of this repository; see README section 6 for where to
+get them.
