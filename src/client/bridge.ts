@@ -1,0 +1,421 @@
+﻿/**
+ * Bridge HTTP client: talks to the local voice-bridge service
+ * (http://127.0.0.1:8765 by default, overridable via localStorage
+ * `s2s.voice.bridge`).
+ */
+
+const DEFAULT_BRIDGE = 'http://127.0.0.1:8765'
+
+/** Resolve the bridge base URL (localStorage override wins). */
+export function bridgeBase(): string {
+  try {
+    return localStorage.getItem('s2s.voice.bridge')?.trim() || DEFAULT_BRIDGE
+  } catch {
+    return DEFAULT_BRIDGE
+  }
+}
+
+/**
+ * fetch with one retry, for the case where the bridge is being restarted.
+ *
+ * The bridge is a local process that the node half may restart at any moment
+ * (see the watchdog in src/index.ts). A request that lands in that window
+ * fails at the socket level — the server never saw it — so retrying it is
+ * safe and free. A request that got an HTTP answer (even 5xx) is NOT
+ * retried: the server did answer, and a second try would only double the
+ * work.
+ *
+ * @param input - the URL to fetch.
+ * @param init - request options (a body may be reused: fetch can re-read
+ *               ArrayBuffers and strings).
+ * @param attempts - how many tries in total (default 2).
+ */
+export async function bridgeFetch(
+  input: string,
+  init?: RequestInit,
+  attempts = 2,
+): Promise<Response> {
+  let lastError: unknown
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      return await fetch(input, init)
+    } catch (err) {
+      lastError = err
+      if (attempt + 1 < attempts) {
+        // Give the bridge a moment to come back before the second try.
+        await new Promise((r) => setTimeout(r, 700 * (attempt + 1)))
+      }
+    }
+  }
+  throw lastError
+}
+
+/**
+ * 语音总开关（composer 上的喇叭按钮，localStorage `s2s.voice.enabled`）。
+ *
+ * ⚠️ 它是整条回复管道的总闸：关掉时 reply-listener 直接 return，逐句 TTS 与
+ * 数字人提交**都不会发生**（数字人本质是「用视频代替朗读」，所以跟着总闸走）。
+ * 界面据此给出提示，避免「我开了数字人怎么没反应」。
+ */
+export function readVoiceEnabled(): boolean {
+  try {
+    return localStorage.getItem('s2s.voice.enabled') !== '0'
+  } catch {
+    return true
+  }
+}
+
+/** Whether the owner-only voiceprint check should be requested. */
+let speakerCheckCache: boolean | null = null
+
+/**
+ * Register the owner's voiceprint with the bridge.
+ *
+ * @param pcm16 - 12 seconds or so of 16 kHz mono PCM16.
+ */
+export async function enrollSpeaker(pcm16: ArrayBuffer): Promise<void> {
+  const resp = await bridgeFetch(`${bridgeBase()}/api/speaker/enroll`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/octet-stream' },
+    body: pcm16,
+  })
+  if (!resp.ok) {
+    const body = await resp.text().catch(() => '')
+    throw new Error(`speaker enroll failed: ${resp.status} ${body}`.trim())
+  }
+  // The next utterance must pick the new voiceprint up.
+  speakerCheckCache = null
+}
+
+/**
+ * Ask the bridge whether an owner voiceprint exists, and whether the user
+ * kept the check on. Cached: this must not add a round trip to every
+ * utterance — the answer is fetched once and reused.
+ *
+ * @returns true when the stt request should carry X-Speaker-Check: 1.
+ */
+async function speakerCheckEnabled(): Promise<boolean> {
+  if (speakerCheckCache !== null) return speakerCheckCache
+  try {
+    if (localStorage.getItem('s2s.voice.speaker') === '0') {
+      speakerCheckCache = false
+      return false
+    }
+  } catch {
+    // storage unavailable: keep the default
+  }
+  try {
+    const resp = await bridgeFetch(`${bridgeBase()}/api/speaker/status`)
+    const body = (await resp.json()) as { enrolled?: boolean; enabled?: boolean }
+    speakerCheckCache = body.enrolled === true && body.enabled !== false
+  } catch {
+    speakerCheckCache = false
+  }
+  return speakerCheckCache
+}
+
+/** Speech to text: raw 16 kHz mono PCM16 -> { text, language, rejected }. */
+export async function stt(
+  pcm16: ArrayBuffer,
+  skipSpeakerCheck = false,
+): Promise<{ text: string; language?: string; rejected?: boolean; score?: number }> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/octet-stream',
+    'X-Max-Audio-Sec': '30',
+  }
+  // Owner-only mode: once a voiceprint is enrolled the bridge drops audio
+  // that does not sound like the owner (someone else talking, the TV, the
+  // TTS leaking through the speakers). Right after the microphone opens the
+  // browser's gain control is still settling, so the check is skipped there —
+  // otherwise the owner's first sentence gets thrown away.
+  const check = !skipSpeakerCheck && (await speakerCheckEnabled())
+  if (check) headers['X-Speaker-Check'] = '1'
+  const resp = await bridgeFetch(`${bridgeBase()}/api/stt`, {
+    method: 'POST',
+    headers,
+    body: pcm16,
+  })
+  if (!resp.ok) {
+    const body = await resp.text().catch(() => '')
+    throw new Error(`voice bridge /api/stt failed: ${resp.status} ${body}`.trim())
+  }
+  return resp.json() as Promise<{ text: string; language?: string; rejected?: boolean; score?: number }>
+}
+
+
+
+/** How long one synthesis may take before it is abandoned (ms). */
+const TTS_TIMEOUT_MS = 45_000
+
+export async function tts(text: string, signal?: AbortSignal): Promise<ArrayBuffer> {
+  // A synthesis that never answers used to wedge the caller forever. The reply
+  // path chains its fetches serially, so ONE hung request silenced the rest of
+  // the reply, and the narration's inFlight flag stayed set, which silenced
+  // every later narration too — until the speaker switch was flipped (that
+  // aborts this request) and it worked again "for a while". A timeout makes a
+  // hung synthesis a normal failure instead: the chain moves on.
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), TTS_TIMEOUT_MS)
+  const forward = (): void => controller.abort()
+  if (signal !== undefined) {
+    if (signal.aborted) controller.abort()
+    else signal.addEventListener('abort', forward, { once: true })
+  }
+  const init: RequestInit = {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text }),
+    signal: controller.signal,
+  }
+  try {
+    const resp = await bridgeFetch(`${bridgeBase()}/api/tts`, init)
+    if (!resp.ok) {
+      const body = await resp.text().catch(() => '')
+      throw new Error(`voice bridge /api/tts failed: ${resp.status} ${body}`.trim())
+    }
+    return await resp.arrayBuffer()
+  } finally {
+    clearTimeout(timer)
+    signal?.removeEventListener('abort', forward)
+  }
+}
+
+/**
+ * One frame from the computer's webcam, grabbed by the bridge.
+ *
+ * The bridge opens the device itself (OpenCV), so no browser permission is
+ * involved — the desktop app never shows a camera prompt.
+ *
+ * @param timeoutMs - how long to wait for the bridge to answer.
+ * @param wantGrid - also ask for the 64x36 HSV grid of the same picture
+ *                   (the raw material for the change score). The bridge
+ *                   computes it from the very frame it encodes, so grid and
+ *                   JPEG always describe the same instant.
+ * @returns the frame (base64 JPEG without a `data:` prefix).
+ */
+export async function cameraFrame(timeoutMs = 8000, wantGrid = false): Promise<{
+  data: string
+  mediaType: string
+  width: number
+  height: number
+  /** Base64 32x24 grayscale fingerprint (change detection). */
+  fingerprint?: string
+  /** Base64 64x36 HSV grid (change score). */
+  grid?: string
+  /** The camera's own frame rate (fps). */
+  deviceFps?: number
+}> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const resp = await bridgeFetch(`${bridgeBase()}/api/camera/frame${wantGrid ? '?grid=1' : ''}`, {
+      method: 'GET',
+      signal: controller.signal,
+    })
+    if (!resp.ok) {
+      const body = await resp.text().catch(() => '')
+      throw new Error(`摄像头取帧失败：${resp.status} ${body}`.trim())
+    }
+    return resp.json() as Promise<{
+      data: string
+      mediaType: string
+      width: number
+      height: number
+      fingerprint?: string
+      grid?: string
+      deviceFps?: number
+    }>
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/** Digital-human task state surfaced by the bridge. */
+export interface DhStatus {  enabled: boolean
+  state: 'idle' | 'tts' | 'generating' | 'done' | 'error' | 'discarded' | string
+  message: string
+  progress: number
+  video_file: string
+  video_url: string
+  /** 本回复已产出的小段视频（续接播放列表）。 */
+  videos: { video_file: string; video_url: string }[]
+  total_segments: number
+  done_segments: number
+  code: string
+  text: string
+  pending: number
+  updated_at: number
+}
+
+/**
+ * Digital human: submit a finished reply text so the bridge synthesizes it
+ * with the same TTS voice and renders a lip-synced talking-head video (DUIX).
+ * Resolves with the task code (null on failure); the latest submission
+ * replaces any not-yet-started one in the bridge queue.
+ */
+export function dhSpeak(text: string): Promise<string | null> {
+  const body = (text || '').trim()
+  if (!body) return Promise.resolve(null)
+  return bridgeFetch(`${bridgeBase()}/api/dh/speak`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text: body }),
+  })
+    .then(async (resp) => {
+      if (!resp.ok) {
+        const b = await resp.text().catch(() => '')
+        throw new Error(`/api/dh/speak failed: ${resp.status} ${b}`.trim())
+      }
+      const json = (await resp.json()) as { code?: string }
+      return json.code ?? null
+    })
+    .catch((err) => {
+      console.error('[ui-voice] digital human submit failed:', err)
+      return null
+    })
+}
+
+/** Discard a submitted digital-human task (barge-in / new turn): its result
+ *  will never be played. Safe to call with null (no-op). */
+export function dhDiscard(code: string | null | undefined): void {
+  if (!code) return
+  void bridgeFetch(`${bridgeBase()}/api/dh/discard`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ code }),
+  }).catch(err => console.error('[ui-voice] digital human discard failed:', err))
+}
+
+/** Poll the digital-human task state (companion window playback driver). */
+export async function dhStatus(): Promise<DhStatus | null> {
+  try {
+    const resp = await bridgeFetch(`${bridgeBase()}/api/dh/status`)
+    if (!resp.ok) return null
+    return resp.json() as Promise<DhStatus>
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Flip the BRIDGE-side digital-human switch (runtime, persisted in the bridge's
+ * bridge-config.json). Turning it off makes the bridge stop for real: no queue
+ * worker, no startup warmup, no DUIX submit/probe traffic at all — the TTS path
+ * keeps working. Turning it on starts the worker + warmup.
+ * Resolves with the bridge's resulting state (null when unreachable).
+ */
+export async function dhEnable(enabled: boolean): Promise<boolean | null> {
+  try {
+    const resp = await bridgeFetch(`${bridgeBase()}/api/dh/enable`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled }),
+    })
+    if (!resp.ok) return null
+    const json = (await resp.json()) as { enabled?: boolean }
+    return json.enabled ?? null
+  } catch (err) {
+    console.error('[ui-voice] digital human switch failed:', err)
+    return null
+  }
+}
+
+/** Window event fired after the local DH toggle changes (or syncs on mount):
+ *  listeners re-read the bridge switch so flipping it takes effect immediately. */
+export const DH_CHANGE_EVENT = 'dsh-voice:dh-change'
+
+/** Announce a DH toggle change to the rest of the plugin. */
+export function notifyDhChanged(): void {
+  try {
+    window.dispatchEvent(new Event(DH_CHANGE_EVENT))
+  } catch {
+    // no window (non-browser context) — nothing to notify
+  }
+}
+
+/**
+ * Streaming silero VAD client for barge-in detection (the server-side VAD of
+ * the original speech-to-speech project). While a reply is playing the mic
+ * recorder pushes PCM16 chunks here; the bridge replies
+ * `{ event: 'speech_start' }` only when a REAL human voice is detected — TTS
+ * echo / music / ambient noise never trip it.
+ */
+export class VadStream {
+  private ws: WebSocket | null = null
+  private buffered: ArrayBuffer[] = []
+  private closed = false
+  private connected = false
+  private retryTimer: number | null = null
+
+  /** Whether the VAD socket is actually connected. The recorder falls back to
+   *  RMS heuristics while this is false (e.g. an old bridge without /api/vad). */
+  get available(): boolean {
+    return this.connected
+  }
+
+  /**
+   * @param onSpeechStart - fired once when silero VAD hears speech.
+   */
+  open(onSpeechStart: () => void): void {
+    if (this.ws !== null) return
+    this.closed = false
+    const proto = bridgeBase().startsWith('https:') ? 'wss:' : 'ws:'
+    const url = `${proto}//${bridgeBase().replace(/^https?:\/\//, '')}/api/vad`
+    const ws = new WebSocket(url)
+    this.ws = ws
+    ws.binaryType = 'arraybuffer'
+    ws.onopen = () => {
+      if (this.ws !== ws) return
+      this.connected = true
+      for (const chunk of this.buffered.splice(0)) {
+        ws.send(chunk)
+      }
+    }
+    ws.onmessage = (event) => {
+      try {
+        const msg = JSON.parse(String(event.data)) as { event?: string }
+        if (msg.event === 'speech_start') onSpeechStart()
+      } catch {
+        // ignore malformed frames
+      }
+    }
+    ws.onclose = () => {
+      if (this.ws === ws) this.ws = null
+      this.connected = false
+      // The bridge may be restarting: come back on our own instead of
+      // waiting for the user to speak again.
+      if (!this.closed && this.retryTimer === null) {
+        this.retryTimer = window.setTimeout(() => {
+          this.retryTimer = null
+          if (!this.closed && this.ws === null) this.open(onSpeechStart)
+        }, 2000)
+      }
+    }
+  }
+
+  /** Push one 16 kHz PCM16 chunk (no-op while the socket is down). */
+  send(pcm16: ArrayBuffer): void {
+    const ws = this.ws
+    if (ws === null || this.closed) return
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(pcm16)
+    } else if (ws.readyState === WebSocket.CONNECTING) {
+      this.buffered.push(pcm16)
+      if (this.buffered.length > 64) this.buffered.shift()
+    }
+  }
+
+  close(): void {
+    this.closed = true
+    this.buffered = []
+    if (this.retryTimer !== null) {
+      window.clearTimeout(this.retryTimer)
+      this.retryTimer = null
+    }
+    const ws = this.ws
+    this.ws = null
+    if (ws !== null) {
+      try { ws.close() } catch { /* already closed */ }
+    }
+  }
+}

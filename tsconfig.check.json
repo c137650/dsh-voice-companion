@@ -1,0 +1,25 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": false,
+    "lib": [
+      "ES2022",
+      "DOM",
+      "DOM.Iterable"
+    ]
+  },
+  "include": [
+    "C:/Users/34230/.dsh/plugins/voice-ai-girlfriend/src/client/MicButton.tsx",
+    "C:/Users/34230/.dsh/plugins/voice-ai-girlfriend/src/client/index.ts",
+    "C:/Users/34230/.dsh/plugins/voice-ai-girlfriend/src/client/voice/smalltalk.ts",
+    "C:/Users/34230/.dsh/plugins/voice-ai-girlfriend/src/client/voice/reply-listener.tsx",
+    "C:/Users/34230/.dsh/plugins/voice-ai-girlfriend/src/client/voice/bridge.ts"
+  ]
+}

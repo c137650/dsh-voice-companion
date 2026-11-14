@@ -1,0 +1,16 @@
+# Voice bridge runtime deps.
+# speech-to-speech (HuggingFace, Apache-2.0) brings torch / torchaudio /
+# transformers / numpy etc. transitively. Install with:
+#   pip install -r requirements.txt
+speech-to-speech==0.2.10
+fastapi
+uvicorn
+soundfile
+scipy
+funasr
+modelscope
+pilk
+# webcam frames, HSV grids and the STT pre-filter
+opencv-python
+# GPT-SoVITS / MiniMax / balance calls
+httpx
