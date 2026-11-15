@@ -1,0 +1,45 @@
+{
+    "name":  "@c137650/dsh-voice-companion",
+    "version":  "0.5.1",
+    "description":  "Voice AI girlfriend for DeepSeek Harness: FunASR mic input, local GPT-SoVITS voice replies, companion window, webcam key-frame sheet. Ships with the local Python voice bridge (auto-started by the plugin).",
+    "type":  "module",
+    "main":  "lib/index.js",
+    "exports":  {
+                    ".":  "./lib/index.js",
+                    "./client":  "./lib/client.js",
+                    "./cordis.patch.yml":  "./cordis.patch.yml",
+                    "./package.json":  "./package.json"
+                },
+    "dsh":  {
+                "bundle":  {
+                               "patch":  "./cordis.patch.yml"
+                           },
+                "client":  {
+                               "platform":  "web",
+                               "inject":  [
+                                              "@deepseek-ai/dsh-client-locale",
+                                              "@deepseek-ai/dsh-client-runtime",
+                                              "@deepseek-ai/dsh-client-ui-conversation"
+                                          ]
+                           }
+            },
+    "scripts":  {
+                    "build":  "node build.mjs",
+                    "prepare":  "node build.mjs"
+                },
+    "files":  [
+                  "lib/",
+                  "cordis.patch.yml",
+                  "README.md",
+                  "bridge/"
+              ],
+    "peerDependencies":  {
+                             "react":  "^18.2.0"
+                         },
+    "devDependencies":  {
+                            "esbuild":  "^0.25.0",
+                            "typescript":  "^5.0.0",
+                            "@types/react":  "~18.3.1"
+                        },
+    "license":  "Apache-2.0"
+}
