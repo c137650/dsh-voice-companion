@@ -1,0 +1,46 @@
+﻿# ---- Python ----
+__pycache__/
+*.pyc
+venv*/
+.venv/
+*.egg-info/
+
+# ---- Node ----
+node_modules/
+dist/
+*.tsbuildinfo
+
+# ---- Local config with personal paths (never commit yours) ----
+bridge/bridge-config.json
+bridge/*.bak*
+
+# ---- Models are downloaded, not committed (see README §6) ----
+models/
+
+# ---- Reference audio: bring your own (see README §6) ----
+ref_audio.wav
+ref_audio.*
+voices/reference/
+
+# ---- Personal media assets ----
+assets/bg-images/*
+assets/task-videos/*
+assets/*.mp4
+assets/*.jpg
+assets/*.png
+assets/*.wav
+
+# ---- Scratch / temp artifacts ----
+*.bak
+tts_out.wav
+*.local.json
+video-test.mp4
+video-smoke.mp4
+logs/
+
+# ---- OS ----
+.DS_Store
+Thumbs.db
+
+# ---- Pre-synthesized filler clips (regenerate with tools/make-fillers.mjs) ----
+bridge/fillers/*.wav

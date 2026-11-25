@@ -1,0 +1,10 @@
+﻿# Personal config and scratch files never belong in the published package.
+bridge/bridge-config.json
+bridge/*.bak*
+bridge/logs/
+bridge/__pycache__/
+__pycache__/
+*.pyc
+*.mp4
+*.wav
+!bridge/requirements.txt

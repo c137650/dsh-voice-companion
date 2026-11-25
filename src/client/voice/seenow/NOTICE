@@ -1,0 +1,15 @@
+dsh-voice-ai-girlfriend
+Copyright (c) 2025 beiyege-01
+
+本产品包含从 dsh-see-now 移植的代码片段：
+
+  dsh-see-now
+  Copyright © 2026 SAOS-3624
+  https://github.com/SAOS-3624/dsh-see-now
+  Licensed under the Apache License, Version 2.0
+
+移植的部分：
+  - src/client/voice/seenow/score.ts —— 逐帧画面变化分的算法（cuts.js 的 scorePair）
+  - src/client/voice/sheet.ts 的留帧判据 —— 切点 + 积分（pipeline.js 的 decide）
+
+Apache-2.0 的完整许可文本见同目录 LICENSE。
